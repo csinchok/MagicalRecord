@@ -10,17 +10,18 @@
 
 static NSManagedObjectContext *defaultManageObjectContext_ = nil;
 static NSString const * kMagicalRecordManagedObjectContextKey = @"MagicalRecord_NSManagedObjectContextForThreadKey";
+NSString * const kMagicalRecordDidMergeChangesFromiCloudNotification = @"kMagicalRecordDidMergeChangesFromiCloudNotification";
 
-@interface NSManagedObjectContext ()
+@interface NSManagedObjectContext (MagicalRecordPrivate)
 
-- (void) mergeChangesFromNotification:(NSNotification *)notification;
-- (void) mergeChangesOnMainThread:(NSNotification *)notification;
+- (void) MR_mergeChangesFromNotification:(NSNotification *)notification;
+- (void) MR_mergeChangesOnMainThread:(NSNotification *)notification;
 
 @end
 
 @implementation NSManagedObjectContext (MagicalRecord)
 
-+ (NSManagedObjectContext *)defaultContext
++ (NSManagedObjectContext *)MR_defaultContext
 {
 	@synchronized (self)
 	{
@@ -28,114 +29,123 @@ static NSString const * kMagicalRecordManagedObjectContextKey = @"MagicalRecord_
 	}
 }
 
-+ (void) setDefaultContext:(NSManagedObjectContext *)moc
++ (void) MR_setDefaultContext:(NSManagedObjectContext *)moc
 {
+#ifndef NS_AUTOMATED_REFCOUNT_UNAVAILABLE
     [moc retain];
     [defaultManageObjectContext_ release];
+#endif
     defaultManageObjectContext_ = moc;
 }
 
-+ (void) resetDefaultContext
++ (void)MR_resetDefaultContext
 {
     void (^resetBlock)(void) = ^{
-        [[NSManagedObjectContext defaultContext] reset];        
+        [[NSManagedObjectContext MR_defaultContext] reset];
     };
     
     dispatch_async(dispatch_get_main_queue(), resetBlock);
 }
 
-+ (void) resetContextForCurrentThread 
++ (void)MR_resetContextForCurrentThread
 {
-    [[NSManagedObjectContext contextForCurrentThread] reset];
+    [[NSManagedObjectContext MR_contextForCurrentThread] reset];
 }
 
-+ (NSManagedObjectContext *) contextForCurrentThread
-{
-	if ([NSThread isMainThread])
-	{
-		return [self defaultContext];
-	}
-	else
-	{
-		NSMutableDictionary *threadDict = [[NSThread currentThread] threadDictionary];
-		NSManagedObjectContext *threadContext = [threadDict objectForKey:kMagicalRecordManagedObjectContextKey];
-		if (threadContext == nil)
-		{
-			threadContext = [self contextThatNotifiesDefaultContextOnMainThread];
-			[threadDict setObject:threadContext forKey:kMagicalRecordManagedObjectContextKey];
-		}
-		return threadContext;
-	}
-}
-
-- (void) observeContext:(NSManagedObjectContext *)otherContext
+- (void) MR_observeContext:(NSManagedObjectContext *)otherContext
 {
 	[[NSNotificationCenter defaultCenter] addObserver:self
-											 selector:@selector(mergeChangesFromNotification:)
+											 selector:@selector(MR_mergeChangesFromNotification:)
 												 name:NSManagedObjectContextDidSaveNotification
 											   object:otherContext];
 }
 
-- (void) observeContextOnMainThread:(NSManagedObjectContext *)otherContext
+- (void) MR_observeContextOnMainThread:(NSManagedObjectContext *)otherContext
 {
-    //	ARLog(@"Start Observing on Main Thread");
+    //	MRLog(@"Start Observing on Main Thread");
 	[[NSNotificationCenter defaultCenter] addObserver:self
-											 selector:@selector(mergeChangesOnMainThread:)
+											 selector:@selector(MR_mergeChangesOnMainThread:)
 												 name:NSManagedObjectContextDidSaveNotification
 											   object:otherContext];
 }
 
-- (void) stopObservingContext:(NSManagedObjectContext *)otherContext
+- (void) MR_stopObservingContext:(NSManagedObjectContext *)otherContext
 {
-    //	ARLog(@"Stop Observing Context");
+    //	MRLog(@"Stop Observing Context");
 	[[NSNotificationCenter defaultCenter] removeObserver:self
 													name:NSManagedObjectContextDidSaveNotification
 												  object:otherContext];
 }
 
-- (void) mergeChangesFromNotification:(NSNotification *)notification
+#pragma mark - Merge Helpers
+
+- (void) MR_observeiCloudChangesInCoordinator:(NSPersistentStoreCoordinator *)coordinator;
 {
-	ARLog(@"Merging changes to %@context%@", 
-          self == [NSManagedObjectContext defaultContext] ? @"*** DEFAULT *** " : @"",
+    [[NSNotificationCenter defaultCenter] addObserver:self 
+                                             selector:@selector(MR_mergeChangesFromiCloud:)
+                                                 name:NSPersistentStoreDidImportUbiquitousContentChangesNotification
+                                               object:coordinator];
+    
+}
+
+- (void) MR_mergeChangesFromiCloud:(NSNotification *)notification;
+{
+    [self performBlock:^{
+        
+        MRLog(@"Merging Changes from iCloud");
+        [self mergeChangesFromContextDidSaveNotification:notification];
+        
+        [[NSNotificationCenter defaultCenter] postNotificationName:kMagicalRecordDidMergeChangesFromiCloudNotification
+                                                            object:self
+                                                          userInfo:[notification userInfo]];
+    }];
+}
+
+- (void) MR_mergeChangesFromNotification:(NSNotification *)notification;
+{
+	MRLog(@"Merging changes to %@context%@", 
+          self == [NSManagedObjectContext MR_defaultContext] ? @"*** DEFAULT *** " : @"",
           ([NSThread isMainThread] ? @" *** on Main Thread ***" : @""));
     
 	[self mergeChangesFromContextDidSaveNotification:notification];
 }
 
-- (void) mergeChangesOnMainThread:(NSNotification *)notification
+- (void) MR_mergeChangesOnMainThread:(NSNotification *)notification;
 {
 	if ([NSThread isMainThread])
 	{
-		[self mergeChangesFromNotification:notification];
+		[self MR_mergeChangesFromNotification:notification];
 	}
 	else
 	{
-		[self performSelectorOnMainThread:@selector(mergeChangesFromNotification:) withObject:notification waitUntilDone:YES];
+		[self performSelectorOnMainThread:@selector(MR_mergeChangesFromNotification:) withObject:notification waitUntilDone:YES];
 	}
 }
 
-- (BOOL) save
+#pragma mark - Save Helpers
+
+- (BOOL) MR_save;
 {
-	return [self saveWithErrorHandler:nil];
+	return [self MR_saveWithErrorHandler:nil];
 }
 
 #ifdef NS_BLOCKS_AVAILABLE
-- (BOOL) saveWithErrorHandler:(void(^)(NSError *))errorCallback
+- (BOOL) MR_saveWithErrorHandler:(void (^)(NSError *))errorCallback;
 {
 	NSError *error = nil;
 	BOOL saved = NO;
 	
 	@try
 	{
-		ARLog(@"Saving %@Context%@", 
-              self == [[self class] defaultContext] ? @" *** Default *** ": @"", 
+		MRLog(@"Saving %@Context%@", 
+              self == [[self class] MR_defaultContext] ? @" *** Default *** ": @"",
               ([NSThread isMainThread] ? @" *** on Main Thread ***" : @""));
         
 		saved = [self save:&error];
 	}
 	@catch (NSException *exception)
 	{
-		ARLog(@"Problem saving: %@", (id)[exception userInfo] ?: (id)[exception reason]);	
+		MRLog(@"Problem saving: %@", (id)[exception userInfo] ?: (id)[exception reason]);	
 	}
 	@finally 
     {
@@ -155,82 +165,110 @@ static NSString const * kMagicalRecordManagedObjectContextKey = @"MagicalRecord_
 }
 #endif
 
-- (void) saveWrapper
+- (void) MR_saveWrapper;
 {
-#if __IPHONE_OS_VERSION_MAX_ALLOWED == __IPHONE_5_0
+#ifdef NS_AUTOMATED_REFCOUNT_UNAVAILABLE
     @autoreleasepool
     {
-        [self save];
+        [self MR_save];
     }
 #else
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-    [self save];
+    [self MR_save];
     [pool drain];
 #endif
 }
 
-- (BOOL) saveOnBackgroundThread
+#pragma mark - Threading Helpers
+
+- (BOOL) MR_saveOnBackgroundThread;
 {
-	[self performSelectorInBackground:@selector(saveWrapper) withObject:nil];
+	[self performSelectorInBackground:@selector(MR_saveWrapper) withObject:nil];
 
 	return YES;
 }
 
-- (BOOL) saveOnMainThread
+- (BOOL) MR_saveOnMainThread;
 {
 	@synchronized(self)
 	{
-		[self performSelectorOnMainThread:@selector(saveWrapper) withObject:nil waitUntilDone:YES];
+		[self performSelectorOnMainThread:@selector(MR_saveWrapper) withObject:nil waitUntilDone:YES];
 	}
 
 	return YES;
 }
 
-- (BOOL) notifiesMainContextOnSave
+- (BOOL) MR_notifiesMainContextOnSave;
 {
     NSNumber *notifies = objc_getAssociatedObject(self, @"notifiesMainContext");
     return notifies ? [notifies boolValue] : NO;
 }
 
-- (void) setNotifiesMainContextOnSave:(BOOL)enabled
+- (void) MR_setNotifiesMainContextOnSave:(BOOL)enabled;
 {
-    NSManagedObjectContext *mainContext = [[self class] defaultContext];
+    NSManagedObjectContext *mainContext = [[self class] MR_defaultContext];
     if (self != mainContext) 
     {
-        SEL selector = enabled ? @selector(observeContextOnMainThread:) : @selector(stopObservingContext:);
+        SEL selector = enabled ? @selector(MR_observeContextOnMainThread:) : @selector(MR_stopObservingContext:);
         objc_setAssociatedObject(self, @"notifiesMainContext", [NSNumber numberWithBool:enabled], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"        
         [mainContext performSelector:selector withObject:self];
+#pragma clang diagnostic pop
     }
 }
 
-+ (NSManagedObjectContext *) contextWithStoreCoordinator:(NSPersistentStoreCoordinator *)coordinator
+#pragma mark - Creation Helpers
+
++ (NSManagedObjectContext *) MR_contextForCurrentThread;
+{
+	if ([NSThread isMainThread])
+	{
+		return [self MR_defaultContext];
+	}
+	else
+	{
+		NSMutableDictionary *threadDict = [[NSThread currentThread] threadDictionary];
+		NSManagedObjectContext *threadContext = [threadDict objectForKey:kMagicalRecordManagedObjectContextKey];
+		if (threadContext == nil)
+		{
+			threadContext = [self MR_contextThatNotifiesDefaultContextOnMainThread];
+			[threadDict setObject:threadContext forKey:kMagicalRecordManagedObjectContextKey];
+		}
+		return threadContext;
+	}
+}
+
++ (NSManagedObjectContext *) MR_contextWithStoreCoordinator:(NSPersistentStoreCoordinator *)coordinator;
 {
 	NSManagedObjectContext *context = nil;
     if (coordinator != nil)
 	{
-        ARLog(@"Creating MOContext %@", [NSThread isMainThread] ? @" *** On Main Thread ***" : @"");
-        context = [[[NSManagedObjectContext alloc] init] autorelease];
+        MRLog(@"Creating MOContext %@", [NSThread isMainThread] ? @" *** On Main Thread ***" : @"");
+        context = [[NSManagedObjectContext alloc] init];
         [context setPersistentStoreCoordinator:coordinator];
+        MR_AUTORELEASE(context);
     }
     return context;
 }
 
-+ (NSManagedObjectContext *) contextThatNotifiesDefaultContextOnMainThreadWithCoordinator:(NSPersistentStoreCoordinator *)coordinator;
++ (NSManagedObjectContext *) MR_contextThatNotifiesDefaultContextOnMainThreadWithCoordinator:(NSPersistentStoreCoordinator *)coordinator;
 {
-    NSManagedObjectContext *context = [self contextWithStoreCoordinator:coordinator];
-    context.notifiesMainContextOnSave = YES;
+    NSManagedObjectContext *context = [self MR_contextWithStoreCoordinator:coordinator];
+    context.MR_notifiesMainContextOnSave = YES;
     return context;
 }
 
-+ (NSManagedObjectContext *) context
++ (NSManagedObjectContext *) MR_context;
 {
-	return [self contextWithStoreCoordinator:[NSPersistentStoreCoordinator MR_defaultStoreCoordinator]];
+	return [self MR_contextWithStoreCoordinator:[NSPersistentStoreCoordinator MR_defaultStoreCoordinator]];
 }
 
-+ (NSManagedObjectContext *) contextThatNotifiesDefaultContextOnMainThread
++ (NSManagedObjectContext *) MR_contextThatNotifiesDefaultContextOnMainThread;
 {
-    NSManagedObjectContext *context = [self context];
-    context.notifiesMainContextOnSave = YES;
+    NSManagedObjectContext *context = [self MR_context];
+    context.MR_notifiesMainContextOnSave = YES;
     return context;
 }
 
