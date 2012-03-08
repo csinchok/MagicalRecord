@@ -44,7 +44,7 @@ void replaceSelectorForTargetWithSourceImpAndSwizzle(Class originalClass, SEL or
     NSMutableString *status = [NSMutableString stringWithString:@"Current Default Core Data Stack: ---- \n"];
     
     [status appendFormat:@"Context:     %@\n", [NSManagedObjectContext MR_defaultContext]];
-    [status appendFormat:@"Model:       %@\n", [NSManagedObjectModel MR_defaultManagedObjectModel]];
+    [status appendFormat:@"Model:       %@\n", [[NSManagedObjectModel MR_defaultManagedObjectModel] entityVersionHashesByName]];
     [status appendFormat:@"Coordinator: %@\n", [NSPersistentStoreCoordinator MR_defaultStoreCoordinator]];
     [status appendFormat:@"Store:       %@\n", [NSPersistentStore MR_defaultPersistentStore]];
     
@@ -75,6 +75,7 @@ void replaceSelectorForTargetWithSourceImpAndSwizzle(Class originalClass, SEL or
             MRLog(@"Error: %@", detailedError);
         }
     }
+    MRLog(@"Error Message: %@", [error localizedDescription]);
     MRLog(@"Error Domain: %@", [error domain]);
     MRLog(@"Recovery Suggestion: %@", [error localizedRecoverySuggestion]);
 }
@@ -123,6 +124,13 @@ void replaceSelectorForTargetWithSourceImpAndSwizzle(Class originalClass, SEL or
 + (void) setDefaultModelNamed:(NSString *)modelName;
 {
     NSManagedObjectModel *model = [NSManagedObjectModel MR_managedObjectModelNamed:modelName];
+    [NSManagedObjectModel MR_setDefaultManagedObjectModel:model];
+}
+
++ (void) setDefaultModelForTestCase:(Class)class;
+{
+    NSBundle *bundle = [NSBundle bundleForClass:class];
+    NSManagedObjectModel *model = [NSManagedObjectModel mergedModelFromBundles:[NSArray arrayWithObject:bundle]];
     [NSManagedObjectModel MR_setDefaultManagedObjectModel:model];
 }
 
@@ -189,21 +197,26 @@ void replaceSelectorForTargetWithSourceImpAndSwizzle(Class originalClass, SEL or
 
 + (void) setupCoreDataStackWithiCloudContainer:(NSString *)icloudBucket localStoreNamed:(NSString *)localStore;
 {
-    [self setupCoreDataStackWithiCloudContainer:icloudBucket contentNameKey:nil localStoreNamed:localStore cloudStorePathComponent:nil];
+    NSString *contentNameKey = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleIdentifier"];
+    [self setupCoreDataStackWithiCloudContainer:icloudBucket contentNameKey:contentNameKey localStoreNamed:localStore cloudStorePathComponent:nil];
 }
 
 + (void) setupCoreDataStackWithiCloudContainer:(NSString *)containerID contentNameKey:(NSString *)contentNameKey localStoreNamed:(NSString *)localStoreName cloudStorePathComponent:(NSString *)pathSubcomponent;
 {
+    [self setupCoreDataStackWithiCloudContainer:containerID contentNameKey:contentNameKey localStoreNamed:localStoreName cloudStorePathComponent:pathSubcomponent completion:nil];
+}
+
++ (void) setupCoreDataStackWithiCloudContainer:(NSString *)containerID contentNameKey:(NSString *)contentNameKey localStoreNamed:(NSString *)localStoreName cloudStorePathComponent:(NSString *)pathSubcomponent completion:(void(^)(void))completion;
+{
     NSPersistentStoreCoordinator *coordinator = [NSPersistentStoreCoordinator MR_coordinatorWithiCloudContainerID:containerID
                                                                                                    contentNameKey:contentNameKey 
                                                                                                   localStoreNamed:localStoreName 
-                                                                                          cloudStorePathComponent:pathSubcomponent];
+                                                                                          cloudStorePathComponent:pathSubcomponent
+                                                                                                       completion:completion];
     [NSPersistentStoreCoordinator MR_setDefaultStoreCoordinator:coordinator];
     
     NSManagedObjectContext *context = [NSManagedObjectContext MR_contextWithStoreCoordinator:coordinator];
     [NSManagedObjectContext MR_setDefaultContext:context];
-    
-    [context MR_observeiCloudChangesInCoordinator:coordinator];    
 }
 
 #pragma mark - Options
@@ -417,10 +430,8 @@ NSDate * dateFromString(NSString *value, NSString *format)
     [formatter setDateFormat:format];
     
     NSDate *parsedDate = [formatter dateFromString:value];
-#ifndef NS_AUTOMATED_REFCOUNT_UNAVAILABLE
-    [formatter autorelease];
-#endif
-    
+    MR_AUTORELEASE(formatter);
+
     return parsedDate;
 }
 

@@ -7,6 +7,7 @@
 //
 
 #import "MagicalRecordHelperTests.h"
+#import "OCMockObject.h"
 
 
 @protocol MagicalRecordErrorHandlerProtocol <NSObject>
@@ -19,13 +20,12 @@
 
 - (void) setUp
 {
-    [NSManagedObjectModel MR_setDefaultManagedObjectModel:[NSManagedObjectModel MR_managedObjectModelNamed:@"TestModel.momd"]];
+    [MagicalRecordHelpers setDefaultModelNamed:@"TestModel.momd"];
 }
 
 - (void) tearDown
 {
     [MagicalRecordHelpers cleanUp];
-    //delete temp store
 }
 
 - (void) assertDefaultStack
@@ -46,7 +46,7 @@
     [self assertDefaultStack];
     
     NSPersistentStore *defaultStore = [NSPersistentStore MR_defaultPersistentStore];
-    assertThat([[defaultStore URL] absoluteString], endsWith(kMagicalRecordDefaultStoreFileName));
+    assertThat([[defaultStore URL] absoluteString], endsWith(@".sqlite"));
     assertThat([defaultStore type], is(equalTo(NSSQLiteStoreType)));
 }
 
